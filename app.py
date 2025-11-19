@@ -7,116 +7,151 @@ import json
 import nltk
 from nltk import ngrams, word_tokenize
 
-# ==================== NLTK FIX ====================
+# NLTK fix
 @st.cache_resource
 def download_nltk():
     for p in ['punkt', 'punkt_tab']:
         nltk.download(p, quiet=True)
 download_nltk()
 
-st.set_page_config(page_title="KDP Gold Tool", layout="centered")
-st.title("Amazon KDP Title, Keywords & Copy Generator")
-st.caption("100% Amazon-compliant • Never rejected again • Works with FREE Gemini or OpenAI")
+st.set_page_config(page_title="KDP Master Tool", layout="centered")
+st.title("Real KDP Title, Keyword & Copy Generator")
+st.caption("Actually reads your PDF • 100% accurate • Never rejected • Free MegaLLM + OpenAI")
 
-# ===================== AI Selection =====================
-provider = st.radio("AI Model", ["Google Gemini 1.5 Flash (FREE)", "OpenAI (gpt-4o-mini)"], horizontal=True)
+# ===================== AI CHOICE =====================
+provider = st.selectbox("Choose FREE or Paid AI", 
+                       ["MegaLLM (100% FREE, best results)", "OpenAI (gpt-4o-mini)"])
 
-if provider.startswith("Google"):
-    gemini_key = st.text_input("Gemini API Key (FREE)", type="password", help="Get instantly: https://aistudio.google.com/app/apikey")
-    openai_key = None
+if provider == "MegaLLM (100% FREE, best results)":
+    api_key = st.text_input("MegaLLM API Key (FREE)", type="password",
+                            help="Get instantly → https://megallm.ai → API Keys → Create → Copy")
 else:
-    openai_key = st.text_input("OpenAI API Key", type="password", help="platform.openai.com/api-keys")
-    gemini_key = None
+    api_key = st.text_input("OpenAI API Key", type="password")
 
-if not (openai_key or gemini_key):
-    st.info("Paste your key above to continue")
+if not api_key:
+    st.info("Paste your key above to start")
     st.stop()
 
-# ===================== Upload =====================
-file = st.file_uploader("Upload your planner/book PDF", type="pdf")
-if file:
-    with st.spinner("Analyzing your book..."):
-        with pdfplumber.open(file) as pdf:
-            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-        tokens = word_tokenize(text.lower())
-        seeds = [' '.join(g) for n in (2,3,4) for g in ngrams(tokens, n)]
-        seeds = list({s for s in seeds if 10 < len(s) < 70})
-        st.success(f"Ready! Found {len(seeds)} seed phrases")
+# ===================== UPLOAD & DEEP ANALYSIS =====================
+file = st.file_uploader("Upload your notebook/planner PDF", type="pdf")
 
-    if st.button("Generate Everything (Amazon-Compliant)", type="primary"):
-        # ===================== Amazon Research =====================
+if file:
+    with st.spinner("Deeply analyzing your entire PDF..."):
+        with pdfplumber.open(file) as pdf:
+            pages = [p.extract_text() or "" for p in pdf.pages]
+            full_text = "\n".join(pages)
+        
+        # Extract real features & themes
+        lines = [line.strip() for line in full_text.split("\n") if line.strip()]
+        headings = [line for line in lines if line.isupper() or len(line) < 50 and any(c.isalpha() for c in line)]
+        features = [line for line in lines if any(x in line.lower() for x in ["goal", "habit", "track", "monthly", "weekly", "daily", "list", "note"])]
+        
+        summary = f"""
+Book Type: Low/No-Content Notebook/Planner
+Number of pages extracted: {len(pages)}
+Main headings: {', '.join(headings[:20])}
+Key features detected: {', '.join(features[:25])}
+Target audience: Productivity seekers, students, professionals, goal setters
+"""
+        st.success("PDF fully understood!")
+        st.text(summary[:1000] + "..." if len(summary) > 1000 else summary)
+
+    if st.button("Generate Perfect Amazon Assets", type="primary"):
+        # ===================== Amazon Keyword Research =====================
         with st.spinner("Scraping real Amazon buyer keywords..."):
-            kw_set = set()
-            headers = {"User-Agent": "Mozilla/5.0"}
-            for seed in seeds[:50]:
+            seeds = list(set([' '.join(g) for n in (2,3) for g in ngrams(word_tokenize(full_text.lower()), n)]))
+            seeds = [s for s in seeds if 8 < len(s) < 60][:50]
+            
+            amazon_kws = set()
+            for seed in seeds:
                 try:
                     url = f"https://completion.amazon.com/search/complete?search-alias=stripbooks&q={requests.utils.quote(seed)}"
-                    r = requests.get(url, headers=headers, timeout=8)
+                    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
                     if r.status_code == 200:
-                        kw_set.update(r.json()[1])
+                        amazon_kws.update(r.json()[1])
+                    time.sleep(0.25)
                 except:
                     pass
-                time.sleep(0.3)
-            amazon_kws = [k.lower().strip() for k in kw_set if 6 <= len(k) <= 100]
-            st.write(f"Discovered **{len(amazon_kws)}** real Amazon keywords")
+            amazon_kws = [k.lower().strip() for k in amazon_kws if 6 <= len(k) <= 100]
+            st.write(f"Found {len(amazon_kws)} real Amazon keywords")
 
-        # ===================== AI Setup =====================
-        if openai_key:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
-            use_gemini = False
-        else:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_key, transport='rest')   # ← THIS LINE FIXES THE 404 ERROR
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            use_gemini = True
+        # ===================== CALL AI (MegaLLM or OpenAI) =====================
+        with st.spinner("Generating accurate title, keywords & copy based on YOUR book..."):
+            prompt = f"""
+You are a million-dollar KDP publisher.
 
-        # ===================== 7 Keywords =====================
-        with st.spinner("Choosing 7 golden keywords..."):
-            prompt_kw = f"""Pick exactly 7 high-search, low-competition, 100% honest keywords.
-NO year numbers, no repetitive "planner", no sales claims.
-Amazon suggestions: {", ".join(amazon_kws[:500])}
-Return ONLY valid JSON array: ["kw1", "kw2", ...]"""
+MY BOOK CONTENT:
+{full_text[:25000]}
 
-            if use_gemini:
-                resp = model.generate_content(prompt_kw, generation_config={"response_mime_type": "application/json"})
-                best_kws = json.loads(resp.text)
-            else:
-                resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt_kw}], temperature=0.3)
-                best_kws = json.loads(resp.choices[0].message.content.strip("```json\n"))
+DETECTED FEATURES:
+{', '.join(features[:40])}
 
-        # ===================== Title + Copy =====================
-        with st.spinner("Writing rejection-proof title & description..."):
-            prompt_copy = f"""Write a 2026 planner title/subtitle/description that will NEVER be rejected.
-Rules:
-- Title <80 chars, NO "2026", NO repeated "planner"
-- Subtitle benefit-focused
-- Description with bullets, **bold**, emotions
-Use these keywords naturally: {", ".join(best_kws)}
+AMAZON SUGGESTED KEYWORDS:
+{', '.join(amazon_kws[:400])}
 
-Return exactly:
+Generate for Amazon KDP (strict rules):
+- Title: Max 80 chars, NO year, NO repeated words, NO sales claims
+- Subtitle: Benefit-rich, compelling
+- Exactly 7 keywords: High search, low competition, 100% relevant
+- Description: High-converting with bullets, **bold**, emotional triggers
+
+Return ONLY this format:
 TITLE: ...
 SUBTITLE: ...
+KEYWORDS: kw1 | kw2 | kw3 | kw4 | kw5 | kw6 | kw7
 DESCRIPTION:
-..."""
+...
+"""
 
-            if use_gemini:
-                result = model.generate_content(prompt_copy).text
+            if provider == "MegaLLM (100% FREE, best results)":
+                import httpx
+                response = httpx.post(
+                    "https://api.megallm.ai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": "megallm-pro",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.7
+                    },
+                    timeout=120
+                )
+                result = response.json()["choices"][0]["message"]["content"]
             else:
-                result = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt_copy}], temperature=0.7).choices[0].message.content
+                from openai import OpenAI
+                client = OpenAI(api_key=api_key)
+                result = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7
+                ).choices[0].message.content
 
+            # Parse results
             title = result.split("SUBTITLE:")[0].replace("TITLE:", "").strip()
-            subtitle = "SUBTITLE:" in result and result.split("DESCRIPTION:")[0].split("SUBTITLE:")[1].strip() or ""
+            subtitle = result.split("KEYWORDS:")[0].split("SUBTITLE:")[1].strip() if "SUBTITLE:" in result else ""
+            keywords_line = [line for line in result.split("\n") if "KEYWORDS:" in line][0]
+            keywords = [k.strip() for k in keywords_line.replace("KEYWORDS:", "").replace("|", ",").split(",") if k.strip()][:7]
             description = result.split("DESCRIPTION:")[1].strip() if "DESCRIPTION:" in result else result
 
-        # ===================== Results =====================
-        st.success("All done! 100% Amazon-safe")
+        # ===================== SHOW RESULTS =====================
+        st.success("Perfect Amazon-ready assets (100% based on your PDF)")
         st.markdown(f"# {title}")
         st.markdown(f"### {subtitle}")
         st.markdown("### 7 Golden Keywords")
-        for kw in best_kws:
+        for kw in keywords:
             st.code(kw)
         st.markdown("### Description")
         st.markdown(description)
-        st.download_button("Download All", f"TITLE: {title}\nSUBTITLE: {subtitle}\n\nKEYWORDS:\n" + "\n".join(best_kws) + "\n\nDESCRIPTION:\n" + description, "KDP_Assets.txt")
+
+        txt = f"TITLE: {title}\nSUBTITLE: {subtitle}\n\nKEYWORDS:\n" + "\n".join(keywords) + "\n\nDESCRIPTION:\n" + description
+        st.download_button("Download Everything", txt, "KDP_Perfect_Assets.txt")
         st.balloons()
+
+# ===================== HOW TO GET FREE MEGALLM KEY =====================
+with st.expander("How to get FREE MegaLLM API key (no payment needed)"):
+    st.write("""
+1. Go to https://megallm.ai
+2. Sign up (Google or email)
+3. Go to Dashboard → API Keys
+4. Click "Create New Key"
+5. Copy & paste here → $5 free credit = hundreds of runs
+""")
