@@ -1,0 +1,6 @@
+streamlit
+pdfplumber
+requests
+beautifulsoup4
+openai
+nltk
