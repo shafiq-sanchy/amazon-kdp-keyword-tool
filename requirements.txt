@@ -4,4 +4,4 @@ requests
 beautifulsoup4
 nltk
 openai>=1.0.0
-google-generativeai
+httpx
