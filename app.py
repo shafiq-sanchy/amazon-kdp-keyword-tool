@@ -4,153 +4,162 @@ import requests
 import time
 import re
 from bs4 import BeautifulSoup
-import openai
-from collections import Counter
 import json
+import nltk
 
-# ==== CONFIG ====
-openai.api_key = st.secrets["OPENAI_API_KEY"]  # We will set this secretly later
+# ==== FIX NLTK DOWNLOAD ISSUE ====
+@st.cache_resource
+def download_nltk_data():
+    nltk.download('punkt_tab', quiet=True)
+    nltk.download('punkt', quiet=True)
+    nltk.download('wordnet', quiet=True)
 
-# Amazon headers to mimic a real browser
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Connection": "keep-alive",
-}
+download_nltk_data()  # This runs once and fixes the error forever
 
-# ======================
-st.set_page_config(page_title="KDP Keyword Goldminer", layout="centered")
-st.title("🚀 Amazon KDP Keyword + Copy Generator")
-st.caption("Upload your book PDF → Get perfect title, subtitle, description & 7 golden keywords (high search, low competition)")
+from nltk import word_tokenize, ngrams
 
-uploaded_file = st.file_uploader("Upload your book, planner, journal or ebook (PDF)", type="pdf")
+# ====================== CONFIG ======================
+st.set_page_config(page_title="KDP Keyword + Copy Generator", layout="centered")
+st.title("🚀 Ultimate Amazon KDP Keyword & Copy Generator")
+st.caption("Works with OpenAI (gpt-4o-mini) or Google Gemini 1.5 Flash (completely free)")
+
+# ------------------ API KEY INPUT (user can paste their own) ------------------
+api_provider = st.radio("Choose AI provider", ["OpenAI (gpt-4o-mini)", "Google Gemini 1.5 Flash (FREE)"], horizontal=True)
+
+if api_provider == "OpenAI (gpt-4o-mini)":
+    openai_key = st.text_input("Enter your OpenAI API key", type="password", help="Get it free at https://platform.openai.com/api-keys")
+    gemini_key = None
+else:
+    gemini_key = st.text_input("Enter your Google Gemini API key (FREE)", type="password", help="Get it instantly at https://aistudio.google.com/app/apikey")
+    openai_key = None
+
+if not (openai_key or gemini_key):
+    st.info("👆 Paste your API key above to continue (takes 2 seconds)")
+    st.stop()
+
+# ------------------ File upload ------------------
+uploaded_file = st.file_uploader("Upload your book, planner, journal or ebook (PDF only)", type="pdf")
 
 if uploaded_file:
-    with st.spinner("Reading and analyzing your manuscript..."):
+    with st.spinner("Reading your manuscript..."):
         with pdfplumber.open(uploaded_file) as pdf:
-            full_text = ""
-            for page in pdf.pages:
-                full_text += page.extract_text() + "\n"
-        
-        # Clean and extract words
+            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
         words = re.findall(r'\b[a-zA-Z]+\b', full_text.lower())
-        word_count = len(words)
-        st.success(f"Extracted {len(full_text):,} characters and {word_count:,} words")
+        st.success(f"✅ Extracted {len(full_text):,} characters • {len(words):,} words")
 
-        # Get most common meaningful phrases (2-4 words)
-        from nltk import ngrams, word_tokenize
-        import nltk
-        nltk.download('punkt', quiet=True)
+        # Generate candidate seed phrases
         tokens = word_tokenize(full_text.lower())
-        bigrams = [' '.join(gram) for gram in ngrams(tokens, 2)]
-        trigrams = [' '.join(gram) for gram in ngrams(tokens, 3)]
-        fourgrams = [' '.join(gram) for gram in ngrams(tokens, 4)]
-        
-        candidate_seeds = [w for w in set(bigrams + trigrams + fourgrams) if len(w) > 8 and len(w.split()) <= 4]
+        bigrams = [' '.join(g) for g in ngrams(tokens, 2)]
+        trigrams = [' '.join(g) for g in ngrams(tokens, 3)]
+        fourgrams = [' '.join(g) for g in ngrams(tokens, 4)]
+        candidate_seeds = [phrase for phrase in set(bigrams + trigrams + fourgrams) 
+                          if 8 < len(phrase) < 60 and phrase.count(' ') <= 3]
 
-    if st.button("🔥 Start Deep Amazon Research (takes 2-4 minutes)", type="primary"):
-        with st.spinner("Researching Amazon autocomplete for hundreds of real keywords..."):
+    if st.button("🔥 Start Deep Amazon Research + Generate Copy (2–4 minutes)", type="primary"):
+        with st.spinner("Scraping Amazon autocomplete for real buyer keywords..."):
             amazon_keywords = set()
-            
-            # Try many seed keywords from your book
-            for seed in candidate_seeds[:40]:  # top 40 seeds
+            HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+            for seed in candidate_seeds[:45]:
                 try:
-                    url = f"https://www.amazon.com/s?k={seed.replace(' ', '+')}"
+                    url = f"https://completion.amazon.com/search/complete?search-alias=stripbooks&mkt=1&q={requests.utils.quote(seed)}"
                     r = requests.get(url, headers=HEADERS, timeout=10)
-                    soup = BeautifulSoup(r.text, 'html.parser')
-                    
-                    # Amazon autocomplete via completion.amazon.com (real-time)
-                    completion_url = "https://completion.amazon.com/search/complete"
-                    params = {
-                        "search-alias": "stripbooks",
-                        "client": "amazon-search-ui",
-                        "q": seed
-                    }
-                    resp = requests.get(completion_url, params=params, headers=HEADERS, timeout=10)
-                    if resp.status_code == 200:
-                        suggestions = resp.json()[1]
+                    if r.status_code == 200:
+                        suggestions = r.json()[1]
                         amazon_keywords.update(suggestions)
                 except:
-                    continue
-                time.sleep(0.5)  # Be gentle
-                
-            amazon_keywords = [k.lower() for k in amazon_keywords if 5 <= len(k) <= 100]
-            st.write(f"Found {len(amazon_keywords):,} real Amazon keywords")
+                    pass
+                time.sleep(0.4)
 
-        with st.spinner("Finding the 7 golden keywords (high search + low competition)..."):
-            # Use OpenAI to rank keywords intelligently
-            prompt = f"""
-You are a 15-year Amazon KDP expert. From this book content and the list of Amazon-suggested keywords below,
-select exactly 7 keywords that have:
-- Very high search volume on Amazon
-- Very low competition (ideally <50 competing books with that exact phrase in title)
-- 100% honest and relevant to the book
-- Mix of broad and long-tail
+            amazon_keywords = [k.lower().strip() for k in amazon_keywords if 5 <= len(k) <= 100]
+            st.write(f"Found **{len(amazon_keywords)}** real Amazon search suggestions")
 
-Book is about: {full_text[:12000]}...
+        # ------------------ Use selected AI ------------------
+        with st.spinner("Selecting the 7 absolute best keywords (high search + low competition)..."):
+            if openai_key:
+                import openai
+                openai.api_key = openai_key
+                client_type = "openai"
+            else:
+                import google.generativeai as genai
+                genai.configure(api_key=gemini_key)
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                client_type = "gemini"
 
-Amazon suggested keywords:
-{', '.join(list(amazon_keywords)[:500])}
+            prompt_keywords = f"""
+You are a 15-year Amazon KDP millionaire expert.
+From this book and the Amazon autocomplete suggestions below, choose exactly 7 keywords that have:
+• Very high monthly search volume
+• Very low competition (<100 exact-match books ideal)
+• 100% relevant and not misleading
+• Mix of broad + long-tail
 
-Return ONLY a JSON array of exactly 7 keywords, no explanation:
+Book content sample: {full_text[:14000]}
+
+Amazon suggestions: {", ".join(list(amazon_keywords)[:600])}
+
+Return ONLY a valid JSON array with exactly 7 keywords:
 ["keyword one", "keyword two", ...]
 """
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3
-            )
-            try:
+
+            if client_type == "openai":
+                response = openai.ChatCompletion.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt_keywords}],
+                    temperature=0.2
+                )
                 best_keywords = json.loads(response.choices[0].message.content.strip())
-            except:
-                best_keywords = response.choices[0].message.content.strip("[]").replace('"', '').split(",")
-                best_keywords = [k.strip() for k in best_keywords][:7]
+            else:
+                response = model.generate_content(prompt_keywords + "\n\nRespond with valid JSON only.")
+                best_keywords = json.loads(response.text.strip("` \njson"))
 
-        with st.spinner("Writing world-class title, subtitle & description by a 20-year copywriter..."):
+            if not isinstance(best_keywords, list) or len(best_keywords) != 7:
+                best_keywords = best_keywords[:7] if isinstance(best_keywords, list) else ["error"] * 7
+
+        with st.spinner("Writing #1 bestselling title, subtitle & description (20-year copywriter level)..."):
             copy_prompt = f"""
-You are a legendary direct-response copywriter with 20 years writing Amazon #1 bestsellers.
-
+You are a legendary Amazon copywriter who has written dozens of #1 bestsellers.
 Write:
-1. A magnetic main title (max 80 characters)
-2. A benefit-rich subtitle (max 200 characters)
-3. A high-converting Amazon description (max 4000 characters, use bullet points, bold, emotional triggers)
+1. Magnetic main title (max 80 chars)
+2. Benefit-packed subtitle (max 200 chars)
+3. High-converting Amazon description (bullet points, bold, emotional, social proof)
 
-Book content summary: {full_text[:15000]}
+Use these 7 keywords naturally: {", ".join(best_keywords)}
 
-Use these 7 keywords naturally: {', '.join(best_keywords)}
+Book content: {full_text[:16000]}
 
-Make it impossible to scroll past. Focus on transformation, pain points, and proof.
-
-Return only:
+Return exactly in this format:
 TITLE: ...
 SUBTITLE: ...
 DESCRIPTION:
 ...
 """
-            copy = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": copy_prompt}],
-                temperature=0.7
-            )
-            result = copy.choices[0].message.content
 
-            title = result.split("SUBTITLE:")[0].replace("TITLE:", "").strip()
-            subtitle = result.split("DESCRIPTION:")[0].split("SUBTITLE:")[1].strip() if "SUBTITLE:" in result else ""
-            description = result.split("DESCRIPTION:")[1].strip() if "DESCRIPTION:" in result else result
+            if client_type == "openai":
+                copy = openai.ChatCompletion.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": copy_prompt}],
+                    temperature=0.7
+                ).choices[0].message.content
+            else:
+                copy = model.generate_content(copy_prompt).text
 
-        st.success("Done! Here are your Amazon-ready assets:")
+            # Parse result
+            title = copy.split("SUBTITLE:")[0].replace("TITLE:", "").strip()
+            subtitle = copy.split("DESCRIPTION:")[0].split("SUBTITLE:")[1].strip() if "SUBTITLE:" in copy else ""
+            description = copy.split("DESCRIPTION:")[1].strip() if "DESCRIPTION:" in copy else copy
 
-        st.markdown(f"### 📕 **{title}**")
-        st.markdown(f"#### {subtitle}")
+        # ------------------ FINAL RESULTS ------------------
+        st.success("🎉 Your Amazon-ready assets are ready!")
+        st.markdown(f"# {title}")
+        st.markdown(f"### {subtitle}")
         st.markdown("### 7 Golden Keywords")
         for kw in best_keywords:
-            st.markdown(f"- `{kw}`")
+            st.code(kw)
 
         st.markdown("### Amazon Description (copy-paste ready)")
-        st.markdown(description)
+        st.markdown(description.replace("**", "**") if "**" in description else description)
 
-        if st.button("Download as TXT file"):
-            txt = f"TITLE: {title}\nSUBTITLE: {subtitle}\n\nKEYWORDS:\n" + "\n".join(best_keywords) + "\n\nDESCRIPTION:\n" + description
-            st.download_button("Download now", txt, "kdp_assets.txt")
+        txt = f"TITLE: {title}\nSUBTITLE: {subtitle}\n\nKEYWORDS:\n" + "\n".join(best_keywords) + "\n\nDESCRIPTION:\n" + description
+        st.download_button("📥 Download everything as .txt", txt, "KDP_Assets.txt", "text/plain")
